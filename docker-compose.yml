@@ -1,0 +1,67 @@
+# PostgreSQL в Docker для ограниченного хоста:
+#   1 ядро CPU · 1 ГБ RAM · 10 ГБ диск.
+#
+# Быстрый старт:
+#   cp .env.example .env      # затем задайте надёжный PGPASSWORD
+#   docker compose up -d
+#   docker compose ps
+#
+# Список услуг: db (PostgreSQL)
+services:
+  db:
+    image: ${POSTGRES_IMAGE:-postgres:18-alpine}
+    container_name: cryptodb-postgres
+    restart: unless-stopped
+
+    environment:
+      # Эти переменные использует официальный образ для инициализации
+      # кластера при первом старте (значения берутся из .env).
+      POSTGRES_USER: ${PGUSER:-postgres}
+      POSTGRES_PASSWORD: ${PGPASSWORD:?copy .env.example to .env and set PGPASSWORD}
+      POSTGRES_DB: ${PGDATABASE:-cryptodb}
+
+    # Подключаем собственный тюнинг-конфиг (см. db/postgresql.conf).
+    command:
+      - postgres
+      - -c
+      - config_file=/etc/postgresql/postgresql.conf
+
+    ports:
+      # Доступ на всех интерфейсах (0.0.0.0) — к БД подключаются и другие
+      # машины в сети. ВАЖНО: если хост смотрит в интернет напрямую —
+      # ограничьте доступ фаерволом (наружу порт открывать не рекомендуется).
+      # Вариант «только локально»: "127.0.0.1:${PGPORT:-5432}:5432"
+      - "${PGPORT:-5432}:5432"
+
+    volumes:
+      # Данные — в именованный том (переживают пересоздание контейнера).
+      # ВАЖНО (postgres:18+): образ хранит данные в версионированном
+      # подкаталоге (/var/lib/postgresql/<major>/docker) и требует монтирования
+      # родительского /var/lib/postgresql, а не /var/lib/postgresql/data.
+      - pgdata:/var/lib/postgresql
+      # Тюнинг-конфиг и скрипты инициализации — из репозитория (read-only).
+      - ./db/postgresql.conf:/etc/postgresql/postgresql.conf:ro
+      - ./db/init:/docker-entrypoint-initdb.d:ro
+
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U \"$${POSTGRES_USER}\" -d \"$${POSTGRES_DB}\""]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+      start_period: 30s
+
+    # ── Ограничения ресурсов (хост всего 1 ГБ RAM / 1 ядро) ──
+    # 512 МБ оставляем ОС и самому Docker-демону; 1 CPU — всё ядро контейнеру.
+    mem_limit: 512m
+    cpus: 1.0
+
+    # Ротация логов, чтобы не переполнить диск (10 ГБ).
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "3"
+
+volumes:
+  pgdata:
+    name: cryptodb_pgdata
